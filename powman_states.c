@@ -3,8 +3,13 @@
 #include <stdbool.h>
 
 #include "hardware/powman.h"
+#include "pico/platform/sections.h" // for `__not_in_flash_func()`
+#include "pico/runtime_init.h"
 #include "pico/stdlib.h"
 #include "pico/sync.h" // for `__wfi()`
+                       
+#define POWMAN_BOOT_MAGIC_NUM 0xb007c0d3
+#define POWMAN_BOOT_MAGIC_NEG 0x4ff83f2d
 
 // Global state to make sure 
 static uint64_t next_wakeup = 0;
@@ -14,6 +19,7 @@ static uint64_t const WAKEUP_INTERVAL = 5000;
 static uint32_t led_off_time = 250;
 static uint32_t led_on_time = 500;
 
+volatile bool debug_catch = true;
 
 /**
  *  If something goes wrong, blink rapidly with this pattern.
@@ -39,27 +45,81 @@ void init_peripherals() {
 
 
 /**
+ *  This code should be run from RAM with a stack pointer set by `do_sleep()`
+ *  When this function exits, it should pop the return address of `do_sleep()`
+ *  and return to where that function was called from.
+ *  Because of this, the stack space reserved in this function should be the same
+ *  as what was reserved in `do_sleep()`, in this case, none since we don't have
+ *  any local variables.
+ */
+void __not_in_flash_func(exit_sleep)() {
+
+    //while(debug_catch);
+    debug_catch = 1;
+
+    //runtime_run_initializers();
+    runtime_init();
+
+    while(debug_catch);
+    debug_catch = 1;
+
+    stdio_init_all();
+    printf("awake");
+    stdio_flush();
+
+    init_peripherals();
+
+    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+    sleep_ms(150);
+    gpio_put(PICO_DEFAULT_LED_PIN, 1);
+    sleep_ms(150);
+
+
+}
+
+
+/**
+ *  We need a separate function to do this to not mess up the stack frame
+ */
+void set_next_timer() {
+    // Set powman timer alarm
+    next_wakeup += WAKEUP_INTERVAL;
+    powman_enable_alarm_wakeup_at_ms(next_wakeup);
+
+}
+
+
+/**
  *  Prepares the system for sleep by setting the powman alarm to self-wakeup.
  *  Also loads the `exit_sleep()` function into RAM to enable rebooting into
  *  it after wakeup.
  */
 void do_sleep() {
 
-    // TODO: Set powman timer alarm
-    next_wakeup += WAKE_INTERVAL;
-    powman_enable_alarm_wakeup_at_ms(next_wakeup);
+    set_next_timer();
 
-    // TODO: Load exit_sleep() into RAM
-    // This should be done by the linker/loader since that's what it was built for.
+    // Set the new `exit_sleep()` RAM function as reboot vector
+    uintptr_t boot_addr = (uintptr_t)exit_sleep | 1; // OR with 1 ensures we are running ARM thumb instructions rather than RISC-V
+    uintptr_t stack_pointer;
 
-    // TODO: Set the new `exit_sleep()` RAM function as reboot vector
-    powman_hw->boot[0] = 0x0; // TODO: magic number
-    powman_hw->boot[1] = 0x0; // TODO: magic number ^ reboot addr
-    powman_hw->boot[2] = 0x0; // TODO: set stack pointer
-    powman_hw->boot[3] = 0x0; // TODO: set reboot addr. OR with 1 ensures we are running ARM thumb instructions rather than RISC-V
+    // We need assembly to get the stack pointer
+    asm (
+        "mov %0, sp"
+        : "=r" (stack_pointer)
+    );
+
+    //printf("boot_addr: %p\n", boot_addr);
+    //printf("stack_pointer: %p\n", stack_pointer);
+    //stdio_flush();
+
+    powman_hw->boot[0] = POWMAN_BOOT_MAGIC_NUM; // magic_number
+    //powman_hw->boot[0] = 0;
+    powman_hw->boot[1] = POWMAN_BOOT_MAGIC_NEG ^ boot_addr; // (-magic_number) ^ boot_addr
+    powman_hw->boot[2] = stack_pointer; // stack pointer
+    powman_hw->boot[3] = boot_addr; // boot_addr
 
     powman_power_state p0_0 = 0x0f; // SW core, XIP cache, SRAM 0, SRAM 1
-    powman_power_state p1_0 = 0x0f; // XIP cache, SRAM 0, SRAM 1
+    powman_power_state p1_0 = 0x07; // XIP cache, SRAM 0, SRAM 1
 
     bool valid = powman_configure_wakeup_state(p1_0, p0_0);
     if(!valid) error_blink(); // 
@@ -70,21 +130,6 @@ void do_sleep() {
 
     // Reboots into bootloader which runs the code from the boot vector above.
     // When that function returns, it goes back to the place this function was called.
-}
-
-
-/**
- *  This code should be run from RAM with a stack pointer set by `do_sleep()`
- *  When this function exits, it should pop the return address of `do_sleep()`
- *  and return to where that function was called from.
- *  Because of this, the stack space reserved in this function should be the same
- *  as what was reserved in `do_sleep()`, in this case, none since we don't have
- *  any local variables.
- */
-void exit_sleep() {
-
-    init_peripherals();
-
 }
 
 
@@ -106,13 +151,19 @@ void do_work() {
 int main() {
     // Enter here from normal reboot when powman reset vector is empty.
 
+    //stdio_init_all();
+
     init_peripherals();
 
     // Set and start the powman timer once
     powman_timer_set_1khz_tick_source_lposc();
     powman_timer_set_ms(0x123456);
-    next_wakeup = 0x123456 + WAKEUP_INTERVAL;
+    next_wakeup = 0x123456;
     powman_timer_start();
+
+    // Allow power down when debugger connected
+    powman_set_debug_power_request_ignored(true);
+
 
     /*
      * Infinite loop to do work and sleep

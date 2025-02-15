@@ -180,9 +180,14 @@ some sort of program state that you wanted to retain anyway and were unlikely
 to want to turn off the RAM in the first place, so it's not really an issue in
 reality.
 
-This is all pretty simple, apart from the whole "loading code into RAM" bit
-which, to my knowledge, requires fiddling with linker scripts to do properly.
-If you can find a better way to do that, then please let me know.
+While we want to avoid the standard initialisation sequence to keep our RAM
+intact, we still need to run *some* initialisation functions like properly
+resetting the peripherals so we can set them up again properly.
+fortunately, in the pico SDK crt0.S[^6] it writes RAM and then calls a function
+`runtime_init()` provided by the pico SDK.
+Once that's one, it calls `main()` and `exit()` like a typical desktop program
+(except `exit()` shouldn't return on an embedded system).
+
 
 ## Credits and Resources
 
