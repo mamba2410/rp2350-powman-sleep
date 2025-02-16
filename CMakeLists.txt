@@ -14,7 +14,7 @@ add_executable(powman_states
 )
 
 # pull in common dependencies
-target_link_libraries(powman_states pico_stdlib hardware_powman pico_multicore)
+target_link_libraries(powman_states pico_stdlib hardware_powman pico_multicore hardware_flash)
 
 # enable usb output, disable uart output
 pico_enable_stdio_usb(powman_states 0)
