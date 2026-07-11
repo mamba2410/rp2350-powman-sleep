@@ -2,6 +2,7 @@
 // Put this in the .time_critical section to make sure it is in RAM, not flash
 .section .time_critical.really_do_sleep
 .global really_do_sleep
+.type really_do_sleep, %function
 really_do_sleep:
     // The reason this is in assembly and not C is because we need full control
     // over the stack and to get an address to the middle of the function.
@@ -62,4 +63,3 @@ really_do_sleep_continue:
 powman_boot_base: .word 0x401000d0
 powman_magic_value: .word 0xb007c0d3
 powman_magic_value_negative: .word 0x4ff83f2d
-
